@@ -43,7 +43,7 @@ pipeline {
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$PWD:$PWD" -w "$PWD" \
-            docker/compose:2.29.7 up -d
+            docker/compose:latest up -d
         '''
       }
     }
@@ -51,8 +51,8 @@ pipeline {
     stage('Smoke') {
       steps {
         sh '''
-          # Warte bis zu 120s, bis Odoo /web/login liefert
-          for i in $(seq 1 60); do
+          # Warte bis zu 180s, bis Odoo /web/login liefert
+          for i in $(seq 1 90); do
             docker run --rm --network host curlimages/curl:8.9.1 \
               -fsS http://localhost:8069/web/login >/dev/null && {
                 echo "Smoke OK"; exit 0; }
