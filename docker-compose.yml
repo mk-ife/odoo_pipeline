@@ -25,7 +25,7 @@ services:
       PGUSER: odoo
       PGPASSWORD: odoo
     ports:
-      - "127.0.0.1:8069:8069"   # lokal binden (später via SSH-Tunnel erreichbar)
+      - "8069:8069"   # lokal binden (später via SSH-Tunnel erreichbar)
     volumes:
       - odoo_data:/var/lib/odoo
 
