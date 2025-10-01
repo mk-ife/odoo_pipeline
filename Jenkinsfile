@@ -37,20 +37,30 @@ pipeline {
     stage('Deploy') {
       steps {
         sh '''
-          echo "WORKSPACE=$WORKSPACE"
-          echo "COMPOSE_FILE=$COMPOSE_FILE"
-          # Sicherstellen, dass die Compose-Datei wirklich da ist:
-          test -f "$WORKSPACE/$COMPOSE_FILE" || { 
-            echo "Compose-Datei nicht gefunden unter: $WORKSPACE/$COMPOSE_FILE";
-            echo "Inhalt von $WORKSPACE:"; ls -la "$WORKSPACE"; 
-            exit 1; 
+          echo "HOST WORKSPACE=$WORKSPACE"
+          echo "HOST COMPOSE_FILE=$COMPOSE_FILE"
+          test -f "$WORKSPACE/$COMPOSE_FILE" || {
+            echo "Compose-Datei fehlt im HOST-Workspace: $WORKSPACE/$COMPOSE_FILE";
+            ls -la "$WORKSPACE";
+            exit 1;
           }
 
-          # Compose-CLI per Container (nur Docker-Socket + Workspace nötig)
+          # 1) Sicht im Compose-Container debuggen
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$WORKSPACE:$WORKSPACE" -w "$WORKSPACE" \
-            docker/compose:latest up -d
+            docker/compose:latest sh -lc '
+              echo "CONTAINER PWD=$(pwd)";
+              echo "CONTAINER list:"; ls -la;
+              echo "Try to show docker-compose.yml:";
+              [ -f docker-compose.yml ] && head -n 20 docker-compose.yml || echo "NO docker-compose.yml in container"
+            '
+
+          # 2) Compose explizit mit -f aufrufen
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$WORKSPACE:$WORKSPACE" -w "$WORKSPACE" \
+            docker/compose:latest -f docker-compose.yml up -d
         '''
       }
     }
@@ -58,7 +68,6 @@ pipeline {
     stage('Smoke') {
       steps {
         sh '''
-          # Warte bis zu 180s, bis Odoo /web/login liefert
           for i in $(seq 1 90); do
             docker run --rm --network host curlimages/curl:8.9.1 \
               -fsS http://localhost:8069/web/login >/dev/null && {
