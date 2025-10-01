@@ -1,0 +1,34 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    container_name: odoo-db
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: odoo18
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  odoo:
+    image: odoo:18.0
+    container_name: odoo-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGUSER: odoo
+      PGPASSWORD: odoo
+    ports:
+      - "127.0.0.1:8069:8069"   # lokal binden (später via SSH-Tunnel erreichbar)
+    volumes:
+      - odoo_data:/var/lib/odoo
+
+volumes:
+  pg_data:
+  odoo_data:
