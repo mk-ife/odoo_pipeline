@@ -1,3 +1,5 @@
+version: "3.7"
+
 services:
   db:
     image: postgres:16
@@ -17,8 +19,7 @@ services:
   odoo:
     image: odoo:18.0
     depends_on:
-      db:
-        condition: service_healthy
+      - db    # KEIN condition: service_healthy (v1 versteht das nicht)
     command: >
       odoo --db_host=db --db_port=5432 --db_user=odoo --db_password=password
     ports:
