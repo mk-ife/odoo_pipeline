@@ -1,7 +1,6 @@
 pipeline {
   agent any
   options { timestamps() }
-
   environment {
     COMPOSE_FILE = 'docker-compose.yml'
   }
@@ -11,41 +10,52 @@ pipeline {
       steps { checkout scm }
     }
 
-stage('Lint') {
-  agent {
-    docker {
-      image 'python:3.11-slim'
-      // als root laufen, damit pip systemweit schreiben darf
-      args '-u 0 -e PIP_DISABLE_PIP_VERSION_CHECK=1'
+    stage('Lint') {
+      agent {
+        docker {
+          image 'python:3.11-slim'
+          // als root, damit pip schreiben darf (Permission-Issue vermeiden)
+          args '-u 0 -e PIP_DISABLE_PIP_VERSION_CHECK=1'
+        }
+      }
+      steps {
+        sh '''
+          python --version
+          pip install --no-cache-dir -q flake8
+          flake8 .
+        '''
+      }
     }
-  }
-  steps {
-    sh '''
-      python --version
-      pip install --no-cache-dir -q flake8
-      flake8 .
-    '''
-  }
-}
+
     stage('Build') {
       steps {
-        sh 'docker build -t test-odoo . || echo "kein Dockerfile gefunden – überspringe Build"'
+        sh '''
+          # Optional: falls kein Dockerfile existiert, Build überspringen
+          docker build -t test-odoo . || echo "kein Dockerfile gefunden – überspringe Build"
+        '''
       }
     }
 
     stage('Deploy') {
       steps {
-        sh 'docker compose -f ${COMPOSE_FILE} up -d'
+        sh '''
+          # Compose-CLI per Container (keine lokale Installation nötig)
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:$PWD" -w "$PWD" \
+            docker/compose:2.29.7 up -d
+        '''
       }
     }
 
     stage('Smoke') {
       steps {
         sh '''
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8069/web/login >/dev/null 2>&1; then
-              echo "Smoke OK"; exit 0
-            fi
+          # Warte bis zu 120s, bis Odoo /web/login liefert
+          for i in $(seq 1 60); do
+            docker run --rm --network host curlimages/curl:8.9.1 \
+              -fsS http://localhost:8069/web/login >/dev/null && {
+                echo "Smoke OK"; exit 0; }
             sleep 2
           done
           echo "Smoke failed"; exit 1
