@@ -14,7 +14,6 @@ pipeline {
       agent {
         docker {
           image 'python:3.11-slim'
-          // als root, damit pip schreiben darf (Permission-Issue vermeiden)
           args '-u 0 -e PIP_DISABLE_PIP_VERSION_CHECK=1'
         }
       }
@@ -30,7 +29,6 @@ pipeline {
     stage('Build') {
       steps {
         sh '''
-          # Optional: falls kein Dockerfile existiert, Build überspringen
           docker build -t test-odoo . || echo "kein Dockerfile gefunden – überspringe Build"
         '''
       }
@@ -39,10 +37,19 @@ pipeline {
     stage('Deploy') {
       steps {
         sh '''
-          # Compose-CLI per Container (keine lokale Installation nötig)
+          echo "WORKSPACE=$WORKSPACE"
+          echo "COMPOSE_FILE=$COMPOSE_FILE"
+          # Sicherstellen, dass die Compose-Datei wirklich da ist:
+          test -f "$WORKSPACE/$COMPOSE_FILE" || { 
+            echo "Compose-Datei nicht gefunden unter: $WORKSPACE/$COMPOSE_FILE";
+            echo "Inhalt von $WORKSPACE:"; ls -la "$WORKSPACE"; 
+            exit 1; 
+          }
+
+          # Compose-CLI per Container (nur Docker-Socket + Workspace nötig)
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD:$PWD" -w "$PWD" \
+            -v "$WORKSPACE:$WORKSPACE" -w "$WORKSPACE" \
             docker/compose:latest up -d
         '''
       }
