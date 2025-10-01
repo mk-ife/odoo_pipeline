@@ -11,16 +11,22 @@ pipeline {
       steps { checkout scm }
     }
 
-    stage('Lint') {
-      agent { docker { image 'python:3.11-slim' } }
-      steps {
-        sh '''
-          pip install --no-cache-dir flake8
-          flake8 .
-        '''
-      }
+stage('Lint') {
+  agent {
+    docker {
+      image 'python:3.11-slim'
+      // als root laufen, damit pip systemweit schreiben darf
+      args '-u 0 -e PIP_DISABLE_PIP_VERSION_CHECK=1'
     }
-
+  }
+  steps {
+    sh '''
+      python --version
+      pip install --no-cache-dir -q flake8
+      flake8 .
+    '''
+  }
+}
     stage('Build') {
       steps {
         sh 'docker build -t test-odoo . || echo "kein Dockerfile gefunden – überspringe Build"'
