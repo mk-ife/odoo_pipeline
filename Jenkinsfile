@@ -45,10 +45,15 @@ pipeline {
             exit 1;
           }
 
-          # 1) Sicht im Compose-Container debuggen
+          # Jenkins-Container-ID ermitteln (Hostname == Container-ID in Docker)
+          JENKINS_CID="$(hostname)"
+          echo "JENKINS_CID=$JENKINS_CID"
+
+          # Sicht IM Compose-Container debuggen – jetzt mit --volumes-from
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$WORKSPACE:$WORKSPACE" -w "$WORKSPACE" \
+            --volumes-from "$JENKINS_CID" \
+            -w "$WORKSPACE" \
             docker/compose:latest sh -lc '
               echo "CONTAINER PWD=$(pwd)";
               echo "CONTAINER list:"; ls -la;
@@ -56,11 +61,12 @@ pipeline {
               [ -f docker-compose.yml ] && head -n 20 docker-compose.yml || echo "NO docker-compose.yml in container"
             '
 
-          # 2) Compose explizit mit -f aufrufen
+          # Compose explizit mit -f aufrufen – jetzt sieht er die Datei
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$WORKSPACE:$WORKSPACE" -w "$WORKSPACE" \
-            docker/compose:latest -f docker-compose.yml up -d
+            --volumes-from "$JENKINS_CID" \
+            -w "$WORKSPACE" \
+            docker/compose:latest -f "$COMPOSE_FILE" up -d
         '''
       }
     }
@@ -68,6 +74,7 @@ pipeline {
     stage('Smoke') {
       steps {
         sh '''
+          # Warte bis zu 180s, bis Odoo /web/login liefert
           for i in $(seq 1 90); do
             docker run --rm --network host curlimages/curl:8.9.1 \
               -fsS http://localhost:8069/web/login >/dev/null && {
