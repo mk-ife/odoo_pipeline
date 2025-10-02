@@ -25,7 +25,7 @@ services:
       - "8069:8069"
     volumes:
       - odoo-data:/var/lib/odoo
-      - ./odoo.conf:/etc/odoo/odoo.conf:ro
+      - ./config:/etc/odoo:ro
     restart: unless-stopped
 
 volumes:
