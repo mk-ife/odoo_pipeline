@@ -2,7 +2,10 @@ pipeline {
   agent any
 
   environment {
-    PY_IMAGE = 'python:3.11-slim'
+    // Pfad für den docker compose v2 Plugin-Binary (wird heruntergeladen)
+    DOCKER_CONFIG = "${WORKSPACE}/.docker"
+    COMPOSE_VERSION = "v2.29.7"
+    COMPOSE_URL = "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
   }
 
   stages {
@@ -13,13 +16,14 @@ pipeline {
     }
 
     stage('Lint') {
+      agent { label '' }
       steps {
         script {
-          docker.image(env.PY_IMAGE).inside('-u 0') {
+          docker.image('python:3.11-slim').inside("-u 0") {
             sh '''
               set -eux
               python --version
-              pip install -q --no-cache-dir flake8
+              pip install --no-cache-dir flake8
               flake8 .
             '''
           }
@@ -31,6 +35,7 @@ pipeline {
       steps {
         sh '''
           set -eux
+          # Optionaler Build. Falls kein Dockerfile vorhanden ist, nicht failen.
           if [ -f Dockerfile ]; then
             docker build -t test-odoo .
           else
@@ -44,25 +49,31 @@ pipeline {
       steps {
         sh '''
           set -eux
-          WORKSPACE="$(pwd)"
-          JENKINS_CID="$(hostname)"
 
-          # Sichere, reproduzierbare Compose Version (v1.29.2)
-          COMPOSE_IMG="docker/compose:1.29.2"
+          echo "Workspace: $WORKSPACE"
 
-          # Compose-File prüfen
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            --volumes-from "${JENKINS_CID}" \
-            -w "${WORKSPACE}" \
-            "${COMPOSE_IMG}" config
+          # Compose v2 Plugin lokal in den Workspace laden (einmal pro Joblauf)
+          mkdir -p "${DOCKER_CONFIG}/cli-plugins"
+          if [ ! -x "${DOCKER_CONFIG}/cli-plugins/docker-compose" ]; then
+            echo "Lade docker compose ${COMPOSE_VERSION}…"
+            curl -fsSL "${COMPOSE_URL}" -o "${DOCKER_CONFIG}/cli-plugins/docker-compose"
+            chmod +x "${DOCKER_CONFIG}/cli-plugins/docker-compose"
+          fi
 
-          # Stack starten
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            --volumes-from "${JENKINS_CID}" \
-            -w "${WORKSPACE}" \
-            "${COMPOSE_IMG}" up -d
+          # Zeige Version zur Kontrolle (sollte v2.x sein)
+          docker compose version
+
+          # Sanity-Check: compose-Datei existiert?
+          test -f docker-compose.yml
+
+          # Stack hochfahren (Host-Docker via /var/run/docker.sock)
+          docker compose -f docker-compose.yml up -d
+
+          # Warten, bis der DB-Container gesund ist (optional: wenn Healthcheck in compose.yml vorhanden)
+          # docker compose ps
+
+          # Odoo-Logs kurz zeigen (nur zur Diagnose)
+          docker compose logs --no-color --tail=50 odoo || true
         '''
       }
     }
@@ -71,16 +82,22 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # Warten bis Odoo lauscht
-          for i in $(seq 1 60); do
-            if docker ps --format '{{.Names}}' | grep -q 'odoo'; then
-              break
+          # Wir prüfen den HTTP-Login-Endpunkt mit Retries
+          # Falls Jenkins und Odoo auf demselben Host laufen, hier "localhost".
+          URL="http://localhost:8069/web/login"
+
+          echo "Smoke-Test gegen ${URL}"
+          for i in $(seq 1 30); do
+            if curl -fsS "${URL}" >/dev/null; then
+              echo "Smoke OK"
+              exit 0
             fi
-            sleep 1
+            echo "Warte auf Odoo (${i}/30)…"
+            sleep 3
           done
 
-          # Ein sehr einfacher Check: Container läuft & Port gemappt
-          docker ps
+          echo "Smoke-Test fehlgeschlagen"
+          exit 1
         '''
       }
     }
@@ -88,7 +105,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'docker-compose.yml', onlyIfSuccessful: false
+      archiveArtifacts artifacts: 'docker-compose.yml, odoo.conf', allowEmptyArchive: true
     }
   }
 }
