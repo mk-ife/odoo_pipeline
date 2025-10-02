@@ -1,14 +1,16 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:16
     environment:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: odoo18
+      POSTGRES_DB: odoo   # nur Default, wir erstellen später "odoo18"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL","pg_isready -U odoo -d odoo18"]
+      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 60
@@ -17,19 +19,13 @@ services:
   odoo:
     image: odoo:18.0
     depends_on:
-      - db
-    # env ist optional, Odoo liest aus odoo.conf – lassen wir aber drin, schadet nicht
-    environment:
-      HOST: db
-      PORT: "5432"
-      USER: odoo
-      PASSWORD: password
-      DATABASE: odoo18
+      db:
+        condition: service_healthy
+    ports:
+      - "8069:8069"
     volumes:
       - odoo-data:/var/lib/odoo
       - ./odoo.conf:/etc/odoo/odoo.conf:ro
-    ports:
-      - "8069:8069"
     restart: unless-stopped
 
 volumes:
