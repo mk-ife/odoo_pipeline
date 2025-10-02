@@ -2,10 +2,7 @@ pipeline {
   agent any
 
   environment {
-    // Pfad für den docker compose v2 Plugin-Binary (wird heruntergeladen)
-    DOCKER_CONFIG = "${WORKSPACE}/.docker"
-    COMPOSE_VERSION = "v2.29.7"
-    COMPOSE_URL = "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+    PIP_DISABLE_PIP_VERSION_CHECK = '1'
   }
 
   stages {
@@ -16,10 +13,9 @@ pipeline {
     }
 
     stage('Lint') {
-      agent { label '' }
       steps {
         script {
-          docker.image('python:3.11-slim').inside("-u 0") {
+          docker.image('python:3.11-slim').inside('-u 0') {
             sh '''
               set -eux
               python --version
@@ -31,48 +27,44 @@ pipeline {
       }
     }
 
-    stage('Build') {
-      steps {
-        sh '''
-          set -eux
-          # Optionaler Build. Falls kein Dockerfile vorhanden ist, nicht failen.
-          if [ -f Dockerfile ]; then
-            docker build -t test-odoo .
-          else
-            echo "kein Dockerfile gefunden – überspringe Build"
-          fi
-        '''
-      }
-    }
-
     stage('Deploy') {
       steps {
         sh '''
           set -eux
+          echo "Workspace: $PWD"
 
-          echo "Workspace: $WORKSPACE"
-
-          # Compose v2 Plugin lokal in den Workspace laden (einmal pro Joblauf)
-          mkdir -p "${DOCKER_CONFIG}/cli-plugins"
-          if [ ! -x "${DOCKER_CONFIG}/cli-plugins/docker-compose" ]; then
-            echo "Lade docker compose ${COMPOSE_VERSION}…"
-            curl -fsSL "${COMPOSE_URL}" -o "${DOCKER_CONFIG}/cli-plugins/docker-compose"
-            chmod +x "${DOCKER_CONFIG}/cli-plugins/docker-compose"
+          # 1) sicherstellen, dass die Odoo-Konfig vorhanden ist
+          if [ ! -f config/odoo.conf ]; then
+            echo "WARN: config/odoo.conf fehlt im Workspace – lege Default an"
+            mkdir -p config
+            cat > config/odoo.conf <<'CONF'
+[options]
+addons_path = /mnt/extra-addons
+data_dir = /var/lib/odoo
+db_host = db
+db_port = 5432
+db_user = odoo
+db_password = password
+CONF
           fi
 
-          # Zeige Version zur Kontrolle (sollte v2.x sein)
+          # 2) docker compose v2 sicherstellen (falls nicht schon vorhanden)
+          mkdir -p "$PWD/.docker/cli-plugins"
+          if [ ! -x "$PWD/.docker/cli-plugins/docker-compose" ]; then
+            echo "Lade docker compose v2.29.7…"
+            curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+              -o "$PWD/.docker/cli-plugins/docker-compose"
+            chmod +x "$PWD/.docker/cli-plugins/docker-compose"
+          fi
+          export DOCKER_CONFIG="$PWD/.docker"
+
           docker compose version
 
-          # Sanity-Check: compose-Datei existiert?
+          # 3) Compose starten/aktualisieren
           test -f docker-compose.yml
-
-          # Stack hochfahren (Host-Docker via /var/run/docker.sock)
           docker compose -f docker-compose.yml up -d
 
-          # Warten, bis der DB-Container gesund ist (optional: wenn Healthcheck in compose.yml vorhanden)
-          # docker compose ps
-
-          # Odoo-Logs kurz zeigen (nur zur Diagnose)
+          # 4) kurze Logsicht
           docker compose logs --no-color --tail=50 odoo || true
         '''
       }
@@ -82,20 +74,16 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # Wir prüfen den HTTP-Login-Endpunkt mit Retries
-          # Falls Jenkins und Odoo auf demselben Host laufen, hier "localhost".
-          URL="http://localhost:8069/web/login"
-
-          echo "Smoke-Test gegen ${URL}"
+          echo "Smoke-Test: warte bis Odoo antwortet…"
           for i in $(seq 1 30); do
-            if curl -fsS "${URL}" >/dev/null; then
-              echo "Smoke OK"
+            # Test läuft IM ODOO-CONTAINER
+            if docker compose exec -T odoo curl -fsS http://localhost:8069/web/login >/dev/null 2>&1; then
+              echo "Odoo antwortet (Versuch $i)."
               exit 0
             fi
-            echo "Warte auf Odoo (${i}/30)…"
+            echo "Warte auf Odoo ($i/30)…"
             sleep 3
           done
-
           echo "Smoke-Test fehlgeschlagen"
           exit 1
         '''
@@ -105,7 +93,7 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'docker-compose.yml, odoo.conf', allowEmptyArchive: true
+      archiveArtifacts artifacts: '**/*.log, **/*.txt', fingerprint: false, allowEmptyArchive: true
     }
   }
 }
