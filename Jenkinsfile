@@ -1,92 +1,123 @@
 pipeline {
   agent any
+  options { timestamps() }
+
   environment {
-    DOCKER_CONFIG = "${WORKSPACE}/.docker"
+    // Öffentliche URL für externen Smoke-Test (anpassen, falls nötig)
+    PUBLIC_URL = "http://91.107.228.241:8069/web/login"
   }
+
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
+
     stage('Lint') {
+      steps {
+        script {
+          docker.image('python:3.11-slim').inside('-u 0') {
+            sh '''
+              set -eux
+              pip install --no-cache-dir -q flake8
+              flake8 .
+            '''
+          }
+        }
+      }
+    }
+
+    // ---- Neu hinzugefügt: Build (ohne Einfluss auf Deploy) ----
+    stage('Build') {
       steps {
         sh '''
           set -eux
-          mkdir -p "$DOCKER_CONFIG/cli-plugins"
-          [ -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ] || {
-            echo "Lade docker compose v2.29.7…"
-            curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
-            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
-          }
-          docker compose version
-
-          docker run --rm --pull=missing -u 0 -w "$PWD" \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$PWD:$PWD" \
-            -v "$DOCKER_CONFIG:$DOCKER_CONFIG" \
-            -e DOCKER_CONFIG="$DOCKER_CONFIG" \
-            python:3.11-slim sh -lc '
-              pip install -q flake8 && flake8 .
-            '
+          if [ -f Dockerfile ]; then
+            echo "Dockerfile gefunden – baue Test-Image…"
+            DOCKER_BUILDKIT=1 docker build -t odoo-custom:${BUILD_NUMBER} .
+            docker image ls | grep odoo-custom | head -n 1 || true
+          else
+            echo "Kein Dockerfile im Repo – überspringe Build."
+          fi
         '''
       }
     }
+
     stage('Deploy') {
       steps {
         sh '''
           set -eux
-          echo "Workspace: $PWD"
+          echo "Workspace: $WORKSPACE"
 
-          mkdir -p config
-          [ -f config/odoo.conf ] || cat > config/odoo.conf <<CONF
-[options]
-addons_path = /mnt/extra-addons
-data_dir    = /var/lib/odoo
-db_host     = db
-db_port     = 5432
-db_user     = odoo
-db_password = password
-CONF
+          # docker compose v2 lokal in den Workspace legen (falls nicht da)
+          mkdir -p "$WORKSPACE/.docker/cli-plugins"
+          if [ ! -x "$WORKSPACE/.docker/cli-plugins/docker-compose" ]; then
+            echo "Lade docker compose v2.29.7…"
+            curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+              -o "$WORKSPACE/.docker/cli-plugins/docker-compose"
+            chmod +x "$WORKSPACE/.docker/cli-plugins/docker-compose"
+          fi
 
-          docker compose -f docker-compose.yml -p odoo-pipeline down --remove-orphans || true
-          docker compose -f docker-compose.yml -p odoo-pipeline up -d
+          docker compose version
 
-          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 db || true
-          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 odoo || true
+          # Compose starten
+          test -f docker-compose.yml
+          docker compose -f docker-compose.yml up -d
+
+          # kurze Log-Zeilen ausgeben
+          docker compose logs --no-color --tail=50 odoo || true
         '''
       }
     }
-    stage('Smoke') {
+
+    stage('Smoke (internal)') {
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test (im Odoo-Container mit Python)…"
+          echo "Smoke-Test: warte bis Odoo (im Container) antwortet…"
           for i in $(seq 1 30); do
-            if docker compose -f docker-compose.yml -p odoo-pipeline exec -T odoo \
-              python3 - <<'PY'
+            if docker compose exec -T odoo python3 - <<'PY'
 import urllib.request, sys
 try:
-    with urllib.request.urlopen("http://localhost:8069/web/login", timeout=2) as r:
-        body = r.read(2000)
-        ok = (r.status == 200) and (b"odoo" in body.lower() or b"login" in body.lower())
-        print("HTTP:", r.status, "LEN:", len(body))
-        sys.exit(0 if ok else 2)
+    urllib.request.urlopen("http://localhost:8069/web/login", timeout=3)
+    print("OK")
+    sys.exit(0)
 except Exception as e:
-    print("ERR:", e)
     sys.exit(1)
 PY
             then
-              echo "Smoke OK"
-              break
-            else
-              echo "Warte auf Odoo ($i/30)…"
-              sleep 3
+              echo "Odoo OK (intern nach $i Versuchen)."
+              exit 0
             fi
+            echo "Warte auf Odoo ($i/30)…"; sleep 3
           done
+          echo "Smoke-Test (intern) fehlgeschlagen"
+          exit 1
+        '''
+      }
+    }
+
+    stage('Smoke (external)') {
+      steps {
+        sh '''
+          set -eux
+          echo "Externer Smoke-Test gegen $PUBLIC_URL"
+          for i in $(seq 1 15); do
+            if docker run --rm curlimages/curl:8.9.1 -fsS "$PUBLIC_URL" >/dev/null; then
+              echo "Odoo extern erreichbar (Versuch $i)."
+              exit 0
+            fi
+            echo "Warte extern ($i/15)…"; sleep 3
+          done
+          echo "Externer Smoke-Test fehlgeschlagen"
+          exit 1
         '''
       }
     }
   }
+
   post {
-    always { archiveArtifacts artifacts: '**/docker-compose.yml, **/Jenkinsfile', onlyIfSuccessful: false }
+    always {
+      archiveArtifacts artifacts: 'docker-compose.yml, config/**, Jenkinsfile', allowEmptyArchive: true
+    }
   }
 }
