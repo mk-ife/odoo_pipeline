@@ -4,36 +4,34 @@ services:
     environment:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: postgres
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      POSTGRES_DB: odoo18
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo18"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
 
   odoo:
-    # Standardmäßig das offizielle Odoo nutzen; bei Bedarf in Jenkins ODOO_IMAGE überschreiben.
-    image: ${ODOO_IMAGE:-odoo:18}
+    image: odoo:18.0
     depends_on:
       db:
         condition: service_healthy
+    environment:
+      HOST: db
+      PORT: "5432"
+      USER: odoo
+      PASSWORD: password
+      DATABASE: odoo18
     ports:
       - "8069:8069"
-    # WICHTIG: Diese ENV braucht das offizielle odoo:18-Image vor dem Start.
-    environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_USER: odoo
-      DB_PASSWORD: password
-    # Deine Odoo-Konfiguration kommt aus ./config/odoo.conf
     volumes:
+      - odoo-data:/var/lib/odoo
       - ./config:/etc/odoo:ro
-      # Optional: lokale Addons mounten
-      # - ./custom:/mnt/extra-addons:ro
-    # Explizit starten und Config übergeben
-    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
+    restart: unless-stopped
 
 volumes:
-  pg_data: {}
+  pgdata:
+  odoo-data:
