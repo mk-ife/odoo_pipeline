@@ -11,7 +11,7 @@ pipeline {
     DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
     ODOO_IMAGE    = "odoo-custom:${BUILD_NUMBER}"
 
-    // ==== QS (optional, falls vorhanden) ====
+    // ==== QS (optional) ====
     QS_COMPOSE    = "docker-compose.qs.yml"   // erwartet Services: odoo_qs, db_qs
     QS_PROJECT    = "odoo-pipeline-qs"
     QS_SMOKE_URL  = "http://localhost:18069/web/login"
@@ -29,7 +29,6 @@ pipeline {
           set -eux
           mkdir -p "$DOCKER_CONFIG/cli-plugins"
           [ -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ] || {
-            echo "Lade docker compose v2.29.7…"
             curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
             chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
           }
@@ -52,11 +51,13 @@ pipeline {
         sh '''
           set -eux
           if [ -f Dockerfile ]; then
-            echo "Dockerfile gefunden – baue Test-Image…"
+            echo "Build local image…"
             DOCKER_BUILDKIT=1 docker build -t "odoo-custom:${BUILD_NUMBER}" .
-            docker image ls | grep odoo-custom | head -n 1 || true
+            # zusätzlich latest taggen, damit compose ohne Env auch lokal nutzt
+            docker tag "odoo-custom:${BUILD_NUMBER}" "odoo-custom:latest"
+            docker image ls | grep odoo-custom | head -n 3 || true
           else
-            echo "Kein Dockerfile im Repo – überspringe Build."
+            echo "Kein Dockerfile – überspringe Build."
           fi
         '''
       }
@@ -67,10 +68,9 @@ pipeline {
       steps {
         sh '''
           set -eux
-          # Sicherstellen, dass die Config-Datei existiert
+          # Sicherstellen, dass die Config da ist
           mkdir -p config
           [ -s config/odoo.conf ] || {
-            echo "FEHLT: config/odoo.conf – lege Standard an"
             cat > config/odoo.conf <<CONF
 [options]
 addons_path = /mnt/extra-addons
@@ -82,9 +82,16 @@ db_password = password
 CONF
           }
 
-          # Neu starten (Directory-Mount ./config:/etc/odoo:ro löst den File-Mount-Fehler)
           docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" down --remove-orphans || true
-          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --force-recreate
+
+          # Falls das gewünschte Tag auf diesem Node fehlt: compose build odoo
+          docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1 || {
+            echo "Local image ${ODOO_IMAGE} fehlt – baue mit compose…"
+            ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" build odoo
+          }
+
+          # Up + Build (falls nötig), niemals aus Registry pullen (pull_policy: never)
+          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --build --force-recreate
 
           echo "Warte auf Postgres (DEV/db)…"
           for i in $(seq 1 60); do
@@ -108,7 +115,6 @@ CONF
         sh '''
           set -eux
           echo "Smoke-Test DEV…"
-
           for i in $(seq 1 60); do
             if docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" exec -T \
               -e SMOKE_URL="${DEV_SMOKE_URL}" -e SMOKE_ALT="${DEV_SMOKE_ALT}" \
@@ -142,14 +148,14 @@ PY
       }
     }
 
-    // ===== QS (optional, nur wenn Datei existiert) =====
+    // ===== QS (nur wenn Datei existiert) =====
     stage('Deploy (QS)') {
       when { expression { return fileExists(env.QS_COMPOSE) } }
       steps {
         sh '''
           set -eux
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" down --remove-orphans || true
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --force-recreate
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --build --force-recreate
 
           echo "Warte auf Postgres (QS/db_qs)…"
           for i in $(seq 1 90); do
