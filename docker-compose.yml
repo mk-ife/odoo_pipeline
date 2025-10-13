@@ -5,13 +5,13 @@ services:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: password
       POSTGRES_DB: odoo18
-    volumes:
-      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U odoo -d odoo18"]
       interval: 5s
       timeout: 3s
       retries: 60
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
   odoo:
@@ -19,19 +19,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      HOST: db
-      PORT: "5432"
-      USER: odoo
-      PASSWORD: password
-      DATABASE: odoo18
     ports:
       - "8069:8069"
     volumes:
       - odoo-data:/var/lib/odoo
-      - ./config:/etc/odoo:ro
+      - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
+    # Erzwingt, dass Odoo genau die gemountete Config nutzt
+    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
     restart: unless-stopped
 
 volumes:
-  pgdata:
-  odoo-data:
+  pgdata: {}
+  odoo-data: {}
