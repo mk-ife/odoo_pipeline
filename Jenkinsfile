@@ -10,8 +10,8 @@ pipeline {
     DEV_SMOKE_URL = "http://localhost:8069/web/login"
     DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
 
-    // Stabiler Compose-Tag
-    ODOO_IMAGE    = "odoo-custom:latest"
+    // Stabiler Compose-Tag – default jetzt auf offizielles odoo:18 (du kannst per Parameter übersteuern)
+    ODOO_IMAGE    = "odoo:18"
 
     // ==== QS optional ====
     QS_COMPOSE    = "docker-compose.qs.yml"
@@ -56,9 +56,9 @@ pipeline {
             DOCKER_BUILDKIT=1 docker build -t "odoo-custom:${BUILD_NUMBER}" .
             docker tag "odoo-custom:${BUILD_NUMBER}" "odoo-custom:latest"
           else
-            echo "Kein Dockerfile – Build übersprungen (Deploy nutzt Fallback, falls Image fehlt)."
+            echo "Kein Dockerfile – Build übersprungen (wir nutzen ${ODOO_IMAGE})."
           fi
-          docker image ls | grep -E '^odoo-custom\\s' || true
+          docker image ls | grep -E '^(odoo-custom|odoo)\\s' || true
         '''
       }
     }
@@ -68,6 +68,7 @@ pipeline {
         sh '''
           set -eux
           mkdir -p config
+          [ -d config/odoo.conf ] && { echo "WARN: config/odoo.conf ist ein Verzeichnis – lösche es!"; rm -rf config/odoo.conf; }
           [ -s config/odoo.conf ] || cat > config/odoo.conf <<CONF
 [options]
 addons_path = /mnt/extra-addons
@@ -78,15 +79,9 @@ db_user     = odoo
 db_password = password
 CONF
 
-          # WICHTIG: Fallback, falls lokales Image fehlt:
-          if ! docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1; then
-            echo "Lokales Image ${ODOO_IMAGE} fehlt – ziehe Fallback 'odoo:18' und tagge es…"
-            docker pull odoo:18
-            docker tag odoo:18 "${ODOO_IMAGE}"
-          fi
-
+          # Wenn du eigenes lokales Image willst: export ODOO_IMAGE=odoo-custom:latest
           docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" down --remove-orphans || true
-          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --force-recreate --no-build --pull never
+          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --force-recreate --no-build
 
           echo "Warte auf Postgres (DEV/db)…"
           for i in $(seq 1 60); do
@@ -149,14 +144,8 @@ PY
       steps {
         sh '''
           set -eux
-          # Fallback-Image auch für QS bereitstellen (odoo_qs benutzt eigenes Compose)
-          if ! docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1; then
-            docker pull odoo:18
-            docker tag odoo:18 "${ODOO_IMAGE}"
-          fi
-
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" down --remove-orphans || true
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --force-recreate --no-build --pull never
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --force-recreate --no-build
 
           echo "Warte auf Postgres (QS/db_qs)…"
           for i in $(seq 1 90); do
