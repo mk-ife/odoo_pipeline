@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# DEV-Smoke-Test: wartet im Container "odoo" auf eine erfolgreiche HTTP-Antwort.
-# Standard: /web/database/selector (funktioniert auch ohne initialisierte DB).
-# Wenn du später die DB initialisiert hast, kannst du URL auch auf /web/login ändern:
-#   DEV_URL="http://localhost:8069/web/login" ./scripts/smoke_dev.sh
+# Stelle sicher, dass docker compose (v2) verfügbar ist
+WORKSPACE="${WORKSPACE:-$(pwd)}"
+export DOCKER_CONFIG="$WORKSPACE/.docker"
+mkdir -p "$DOCKER_CONFIG/cli-plugins"
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Lade docker compose v2.29.7…"
+  curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+    -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+  chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+fi
 
 FILE="docker-compose.yml"
 SVC="odoo"
+# Default-URL: /web/database/selector funktioniert auch ohne initialisierte DB
 URL="${DEV_URL:-http://localhost:8069/web/database/selector}"
 RETRIES="${RETRIES:-60}"
 SLEEP_SECS="${SLEEP_SECS:-3}"
 
-# prüfe, ob Service existiert
+# Existiert Compose-Datei & Service?
+test -f "$FILE"
 docker compose -f "$FILE" ps "$SVC" >/dev/null
 
 echo "Smoke-Test DEV: warte bis $URL im Container $SVC erreichbar ist (${RETRIES} Versuche, alle ${SLEEP_SECS}s)…"

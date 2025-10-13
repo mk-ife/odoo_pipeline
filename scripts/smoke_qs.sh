@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# QS-Smoke-Test: wartet im Container odoo_qs auf erfolgreiche HTTP-Antwort.
-# Standard ist /web/login (QS sollte persistent sein). Falls gewünscht:
-# QS_URL="http://localhost:8069/web/database/selector" ./scripts/smoke_qs.sh
+WORKSPACE="${WORKSPACE:-$(pwd)}"
+export DOCKER_CONFIG="$WORKSPACE/.docker"
+mkdir -p "$DOCKER_CONFIG/cli-plugins"
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Lade docker compose v2.29.7…"
+  curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+    -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+  chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+fi
 
 FILE="docker-compose.qs.yml"
 SVC="odoo_qs"
+# Für QS nehmen wir standardmäßig direkt /web/login (da QS stabil/persistenter ist)
 URL="${QS_URL:-http://localhost:8069/web/login}"
 RETRIES="${RETRIES:-60}"
 SLEEP_SECS="${SLEEP_SECS:-3}"
 
-# prüfe, ob Service existiert
+test -f "$FILE"
 docker compose -f "$FILE" ps "$SVC" >/dev/null
 
 echo "Smoke-Test QS: warte bis $URL im Container $SVC erreichbar ist (${RETRIES} Versuche, alle ${SLEEP_SECS}s)…"
