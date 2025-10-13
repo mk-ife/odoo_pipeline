@@ -1,12 +1,9 @@
 pipeline {
   agent any
-  options { timestamps() }
-  parameters {
-    booleanParam(name: 'DEPLOY_QS', defaultValue: false, description: 'Auch nach QS deployen & Smoke-Test ausführen')
+  options {
+    timestamps()
   }
-  environment {
-    DOCKER_CONFIG = "${WORKSPACE}/.docker"
-  }
+
   stages {
     stage('Checkout') {
       steps {
@@ -30,6 +27,7 @@ pipeline {
     }
 
     stage('Build (optional)') {
+      when { expression { return false } } // aktuell deaktiviert; später aktivierbar
       steps {
         sh '''
           set -eux
@@ -42,92 +40,78 @@ pipeline {
       }
     }
 
-    stage('Deploy (DEV)') {
+    stage('Deploy DEV') {
       steps {
         sh '''
           set -eux
-          echo "Workspace: $PWD"
+          echo "Workspace: $WORKSPACE"
 
-          # docker compose v2 (CLI-Plugin) bereitstellen (einmalig pro Workspace)
-          mkdir -p "${DOCKER_CONFIG}/cli-plugins"
-          if [ ! -x "${DOCKER_CONFIG}/cli-plugins/docker-compose" ]; then
+          # Compose v2 im Jenkins-Workspace bereitstellen (CLI-Plugin)
+          export DOCKER_CONFIG="$WORKSPACE/.docker"
+          mkdir -p "$DOCKER_CONFIG/cli-plugins"
+          if [ ! -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ]; then
             echo "Lade docker compose v2.29.7…"
             curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
-              -o "${DOCKER_CONFIG}/cli-plugins/docker-compose"
-            chmod +x "${DOCKER_CONFIG}/cli-plugins/docker-compose"
+              -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
           fi
 
-          # Dev-Stack starten (nutzt dein bestehendes docker-compose.yml)
+          docker compose version
+
+          # DEV hochfahren
           test -f docker-compose.yml
           docker compose -f docker-compose.yml up -d
 
-          # Kurz Logauszug vom Odoo-Dev
-          docker compose logs --no-color --tail=50 odoo || true
+          # Kurze Logs
+          docker compose -f docker-compose.yml logs --tail=50 odoo || true
         '''
       }
     }
 
-    stage('Smoke (DEV)') {
+    stage('Smoke DEV') {
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test: warte bis Odoo (DEV) antwortet…"
-          for i in $(seq 1 30); do
-            if docker compose exec -T odoo curl -fsS http://localhost:8069/web/login >/dev/null 2>&1; then
-              echo "OK: DEV Odoo antwortet."
-              exit 0
-            fi
-            echo "Warte auf Odoo DEV (${i}/30)…"
-            sleep 3
-          done
-          echo "Smoke-Test DEV fehlgeschlagen"
-          exit 1
+          ./scripts/smoke_dev.sh
         '''
       }
     }
 
-    stage('Deploy (QS)') {
-      when { expression { return params.DEPLOY_QS } }
+    stage('Deploy QS') {
       steps {
         sh '''
           set -eux
 
-          # docker compose v2 (CLI-Plugin) ist bereits im DEV-Step bereitgestellt
-          # QS-Stack: eigene Datei, andere Ports/Volumes/Namen
+          # Compose v2 steht bereits bereit (siehe DEV-Stage)
+
+          # QS hochfahren
           test -f docker-compose.qs.yml
           docker compose -f docker-compose.qs.yml up -d
 
-          # DB warten via Healthcheck (compose macht das schon beim Start),
-          # Wir geben trotzdem Logs aus:
-          docker compose -f docker-compose.qs.yml logs --no-color --tail=80 db_qs || true
-          docker compose -f docker-compose.qs.yml ps
+          # Kurze Logs
+          docker compose -f docker-compose.qs.yml logs --tail=50 odoo_qs || true
+
+          # Optional: Warte auf DB-Healthy (nur falls Healthcheck in db_qs definiert ist)
+          # sleep 5
         '''
       }
     }
 
-    stage('Smoke (QS)') {
-      when { expression { return params.DEPLOY_QS } }
+    stage('Smoke QS') {
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test QS: warte bis Odoo (QS) antwortet…"
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.qs.yml exec -T odoo_qs curl -fsS http://localhost:8069/web/login >/dev/null 2>&1; then
-              echo "OK: QS Odoo antwortet."
-              exit 0
-            fi
-            echo "Warte auf Odoo QS (${i}/30)…"
-            sleep 3
-          done
-          echo "Smoke-Test QS fehlgeschlagen"
-          exit 1
+          # Standard prüft /web/login; falls deine QS-DB nicht initialisiert ist:
+          # QS_URL="http://localhost:8069/web/database/selector" ./scripts/smoke_qs.sh
+          ./scripts/smoke_qs.sh
         '''
       }
     }
   }
+
   post {
     always {
-      archiveArtifacts artifacts: '**/*.log, **/compose*.txt', onlyIfSuccessful: false
+      archiveArtifacts artifacts: '**/*.log,**/*.txt,**/*.out,**/*.json', allowEmptyArchive: true
     }
   }
 }
