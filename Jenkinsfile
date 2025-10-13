@@ -9,10 +9,12 @@ pipeline {
     DEV_PROJECT   = "odoo-pipeline"
     DEV_SMOKE_URL = "http://localhost:8069/web/login"
     DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
-    ODOO_IMAGE    = "odoo-custom:${BUILD_NUMBER}"
 
-    // ==== QS (optional) ====
-    QS_COMPOSE    = "docker-compose.qs.yml"   // erwartet Services: odoo_qs, db_qs
+    // Immer ein stabiler lokaler Tag, damit Deploy nie pullt/baut:
+    ODOO_IMAGE    = "odoo-custom:latest"
+
+    // ==== QS optional ====
+    QS_COMPOSE    = "docker-compose.qs.yml"
     QS_PROJECT    = "odoo-pipeline-qs"
     QS_SMOKE_URL  = "http://localhost:18069/web/login"
     QS_SMOKE_ALT  = "http://localhost:18069/web/database/selector"
@@ -46,32 +48,28 @@ pipeline {
       }
     }
 
-    stage('Build') {
+    stage('Build Image (local)') {
       steps {
         sh '''
           set -eux
           if [ -f Dockerfile ]; then
-            echo "Build local image…"
             DOCKER_BUILDKIT=1 docker build -t "odoo-custom:${BUILD_NUMBER}" .
-            # zusätzlich latest taggen, damit compose ohne Env auch lokal nutzt
+            # Immer auch 'latest' vergeben, damit Compose stabil ist
             docker tag "odoo-custom:${BUILD_NUMBER}" "odoo-custom:latest"
             docker image ls | grep odoo-custom | head -n 3 || true
           else
-            echo "Kein Dockerfile – überspringe Build."
+            echo "Kein Dockerfile – Build übersprungen."
           fi
         '''
       }
     }
 
-    // ===== DEV =====
     stage('Deploy (DEV)') {
       steps {
         sh '''
           set -eux
-          # Sicherstellen, dass die Config da ist
           mkdir -p config
-          [ -s config/odoo.conf ] || {
-            cat > config/odoo.conf <<CONF
+          [ -s config/odoo.conf ] || cat > config/odoo.conf <<CONF
 [options]
 addons_path = /mnt/extra-addons
 data_dir    = /var/lib/odoo
@@ -80,18 +78,10 @@ db_port     = 5432
 db_user     = odoo
 db_password = password
 CONF
-          }
 
+          # Keine Builds/Pulls hier! Nur lokal vorhandenes Image verwenden.
           docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" down --remove-orphans || true
-
-          # Falls das gewünschte Tag auf diesem Node fehlt: compose build odoo
-          docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1 || {
-            echo "Local image ${ODOO_IMAGE} fehlt – baue mit compose…"
-            ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" build odoo
-          }
-
-          # Up + Build (falls nötig), niemals aus Registry pullen (pull_policy: never)
-          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --build --force-recreate
+          ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --force-recreate --no-build --pull never
 
           echo "Warte auf Postgres (DEV/db)…"
           for i in $(seq 1 60); do
@@ -148,14 +138,14 @@ PY
       }
     }
 
-    // ===== QS (nur wenn Datei existiert) =====
+    // ===== QS (nur falls Datei existiert, ebenfalls ohne Build) =====
     stage('Deploy (QS)') {
       when { expression { return fileExists(env.QS_COMPOSE) } }
       steps {
         sh '''
           set -eux
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" down --remove-orphans || true
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --build --force-recreate
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --force-recreate --no-build --pull never
 
           echo "Warte auf Postgres (QS/db_qs)…"
           for i in $(seq 1 90); do
@@ -216,9 +206,6 @@ PY
   post {
     always {
       archiveArtifacts artifacts: '**/docker-compose*.yml, **/Jenkinsfile', onlyIfSuccessful: false
-    }
-    failure {
-      echo 'Pipeline fehlgeschlagen – bitte Logs oben prüfen.'
     }
   }
 }

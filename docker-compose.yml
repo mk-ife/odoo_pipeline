@@ -14,22 +14,16 @@ services:
       - pg_data:/var/lib/postgresql/data
 
   odoo:
-    # Lokales Bauen erlauben (robust gegen fehlende Images auf dem Node)
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Image-Name kann per Env überschrieben werden; standardmäßig nutzen wir local 'odoo-custom:latest'
     image: ${ODOO_IMAGE:-odoo-custom:latest}
-    # Nie aus Registry ziehen, wenn lokal vorhanden/baubar
-    pull_policy: never
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8069:8069"
-    # Directory-Mount (vermeidet File/Dir-Mount-Fehler)
     volumes:
+      # Directory-Mount, damit /etc/odoo/odoo.conf immer vorhanden ist
       - ./config:/etc/odoo:ro
+      # Optionale Addons:
       # - ./custom:/mnt/extra-addons:ro
       # - ./enterprise:/mnt/enterprise-addons:ro
     command: ["/opt/odoo/venv/bin/odoo", "-c", "/etc/odoo/odoo.conf"]
