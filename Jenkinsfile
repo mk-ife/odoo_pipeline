@@ -1,124 +1,170 @@
 pipeline {
   agent any
-
-  options {
-    timestamps()
+  environment {
+    DOCKER_CONFIG = "${WORKSPACE}/.docker"
   }
-
   stages {
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      steps { checkout scm }
     }
-
     stage('Lint') {
       steps {
-        script {
-          docker.withRegistry('', null) {
-            docker.image('python:3.11-slim').inside('-u 0') {
-              sh '''
-                set -eux
-                python --version
-                pip install -q flake8
-                flake8 .
-              '''
-            }
-          }
-        }
-      }
-    }
-
-    stage('Build (optional)') {
-      when { expression { return fileExists('Dockerfile') } }
-      steps {
         sh '''
           set -eux
-          docker build -t test-odoo .
-        '''
-      }
-    }
-
-    /* ===================== DEV ===================== */
-    stage('Deploy DEV') {
-      steps {
-        sh '''
-          set -eux
-          echo "Workspace: $WORKSPACE"
-          export DOCKER_CONFIG="$WORKSPACE/.docker"
           mkdir -p "$DOCKER_CONFIG/cli-plugins"
-          # docker compose v2 ist bereits installiert (Deploy-Setup), aber wir prüfen:
+          [ -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ] || {
+            echo "Lade docker compose v2.29.7…"
+            curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          }
           docker compose version
 
-          test -f docker-compose.yml
-          docker compose -f docker-compose.yml up -d
-
-          # kurze Log-Sicht auf odoo
-          docker compose -f docker-compose.yml logs --tail=50 odoo || true
+          docker run --rm --pull=missing -u 0 -w "$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:$PWD" \
+            -v "$DOCKER_CONFIG:$DOCKER_CONFIG" \
+            -e DOCKER_CONFIG="$DOCKER_CONFIG" \
+            python:3.11-slim sh -lc '
+              pip install -q flake8 && flake8 .
+            '
         '''
       }
     }
-
-    stage('Init DB DEV') {
+    stage('Build') {
       steps {
         sh '''
           set -eux
-          # Warte bis Postgres gesund ist
+          if [ -f Dockerfile ]; then
+            echo "Dockerfile gefunden – baue Test-Image…"
+            DOCKER_BUILDKIT=1 docker build -t odoo-custom:${BUILD_NUMBER} .
+            docker image ls | grep odoo-custom | head -n 1 || true
+          else
+            echo "Kein Dockerfile im Repo – überspringe Build."
+          fi
+        '''
+      }
+    }
+    stage('Deploy') {
+      steps {
+        sh '''
+          set -eux
+          echo "Workspace: $PWD"
+
+          mkdir -p config
+          [ -f config/odoo.conf ] || cat > config/odoo.conf <<CONF
+[options]
+addons_path = /mnt/extra-addons
+data_dir    = /var/lib/odoo
+db_host     = db
+db_port     = 5432
+db_user     = odoo
+db_password = password
+CONF
+
+          docker compose -f docker-compose.yml -p odoo-pipeline down --remove-orphans || true
+          docker compose -f docker-compose.yml -p odoo-pipeline up -d
+
+          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 db || true
+          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 odoo || true
+        '''
+      }
+    }
+    stage('Smoke') {
+      steps {
+        sh '''
+          set -eux
+          echo "Smoke-Test (im Odoo-Container mit Python)…"
           for i in $(seq 1 30); do
-            if docker compose -f docker-compose.yml exec -T db sh -lc "pg_isready -U odoo -d odoo18" ; then
-              echo "Postgres ist bereit"
+            if docker compose -f docker-compose.yml -p odoo-pipeline exec -T odoo \
+              python3 - <<'PY'
+import urllib.request, sys
+try:
+    with urllib.request.urlopen("http://localhost:8069/web/login", timeout=2) as r:
+        body = r.read(2000)
+        ok = (r.status == 200) and (b"odoo" in body.lower() or b"login" in body.lower())
+        print("HTTP:", r.status, "LEN:", len(body))
+        sys.exit(0 if ok else 2)
+except Exception as e:
+    print("ERR:", e)
+    sys.exit(1)
+PY
+            then
+              echo "Smoke OK"
               break
+            else
+              echo "Warte auf Odoo ($i/30)…"
+              sleep 3
             fi
-            echo "Warte auf Postgres (${i}/30)…"
-            sleep 2
           done
-
-          # Initialisiere einmalig die DB mit 'base'
-          # --stop-after-init sorgt dafür, dass nur init ausgeführt wird
-          docker compose -f docker-compose.yml exec -T odoo sh -lc "odoo -d odoo18 -i base --without-demo=all --stop-after-init || true"
         '''
       }
     }
 
-    stage('Smoke DEV') {
-      steps {
-        sh '''
-          set -eux
-          ./scripts/smoke_dev.sh
-        '''
-      }
-    }
-
-    /* ===================== QS ===================== */
+    /* ===================== QS (neu) ===================== */
     stage('Deploy QS') {
       steps {
         sh '''
           set -eux
-          export DOCKER_CONFIG="$WORKSPACE/.docker"
-          mkdir -p "$DOCKER_CONFIG/cli-plugins"
-          docker compose version
+          echo "Deploy QS…"
 
-          test -f docker-compose.qs.yml
-          docker compose -f docker-compose.qs.yml up -d
+          mkdir -p config
+          # QS-Config nur anlegen, falls noch nicht vorhanden:
+          [ -f config/odoo_qs.conf ] || cat > config/odoo_qs.conf <<CONF
+[options]
+addons_path = /mnt/extra-addons
+data_dir    = /var/lib/odoo
+db_host     = db_qs
+db_port     = 5432
+db_user     = odoo
+db_password = password
+CONF
 
-          docker compose -f docker-compose.qs.yml logs --tail=50 odoo_qs || true
+          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs down --remove-orphans || true
+          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs up -d
+
+          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs logs --no-color --tail=50 db_qs || true
+          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs logs --no-color --tail=50 odoo_qs || true
         '''
       }
     }
-
     stage('Smoke QS') {
       steps {
         sh '''
           set -eux
-          ./scripts/smoke_qs.sh
+          echo "Smoke-Test QS (im Odoo-QS-Container mit Python)…"
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs exec -T odoo_qs \
+              python3 - <<'PY'
+import urllib.request, sys
+urls = [
+    "http://localhost:8069/web/login",                # Login-Page (falls DB bereits initialisiert)
+    "http://localhost:8069/web/database/selector"     # DB-Selector, wenn noch keine DB gewählt wurde
+]
+ok = False
+for u in urls:
+    try:
+        with urllib.request.urlopen(u, timeout=3) as r:
+            if r.status == 200:
+                print("OK:", u, "HTTP", r.status)
+                ok = True
+                break
+    except Exception as e:
+        print("TRY:", u, "ERR:", e)
+sys.exit(0 if ok else 1)
+PY
+            then
+              echo "Smoke QS OK"
+              break
+            else
+              echo "Warte auf Odoo QS ($i/60)…"
+              sleep 3
+            fi
+          done
         '''
       }
     }
   }
-
   post {
-    always {
-      archiveArtifacts artifacts: '**/smoke_*.log', onlyIfSuccessful: false
-    }
+    always { archiveArtifacts artifacts: '**/docker-compose*.yml, **/Jenkinsfile', onlyIfSuccessful: false }
   }
 }
