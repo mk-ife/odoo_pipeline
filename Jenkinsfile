@@ -12,8 +12,7 @@ pipeline {
     DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
 
     // ==== QS ====
-    // Wir erwarten eine separate QS-Compose mit Services 'odoo_qs' und 'db_qs'
-    QS_COMPOSE    = "docker-compose.qs.yml"
+    QS_COMPOSE    = "docker-compose.qs.yml"   // erwartet Services: odoo_qs, db_qs
     QS_PROJECT    = "odoo-pipeline-qs"
     QS_PORT       = "18069"
     QS_SMOKE_URL  = "http://localhost:18069/web/login"
@@ -69,8 +68,6 @@ pipeline {
       steps {
         sh '''
           set -eux
-
-          # einfache DEV-Config, falls gebraucht
           mkdir -p config
           [ -f config/odoo.conf ] || cat > config/odoo.conf <<CONF
 [options]
@@ -96,8 +93,8 @@ CONF
             fi
           done
 
-          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=80 db || true
-          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=80 odoo || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=120 db || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=120 odoo || true
         '''
       }
     }
@@ -109,16 +106,16 @@ CONF
           echo "Smoke-Test DEV…"
 
           for i in $(seq 1 60); do
-            if docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" exec -T odoo python3 - <<'PY'
-import urllib.request, sys
-urls = [
-    "${DEV_SMOKE_URL}",
-    "${DEV_SMOKE_ALT}",
-]
+            if docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" exec -T \
+              -e SMOKE_URL="${DEV_SMOKE_URL}" -e SMOKE_ALT="${DEV_SMOKE_ALT}" \
+              odoo python3 - <<'PY'
+import os, urllib.request, sys
+urls = [os.environ.get("SMOKE_URL",""), os.environ.get("SMOKE_ALT","")]
+urls = [u for u in urls if u]
 def ok(u):
     try:
-        with urllib.request.urlopen(u, timeout=3) as r:
-            body = r.read(2000).lower()
+        with urllib.request.urlopen(u, timeout=4) as r:
+            body = r.read(4000).lower()
             good = (r.status == 200) and (b"odoo" in body or b"login" in body or b"database" in body or b"selector" in body)
             print("URL:", u, "HTTP:", r.status, "LEN:", len(body))
             return good
@@ -136,23 +133,20 @@ PY
             fi
           done
 
-          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=3m odoo || true
-          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=3m db || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=5m odoo || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=5m db || true
         '''
       }
     }
 
     // ===== QS =====
     stage('Deploy (QS)') {
-      when {
-        expression { return fileExists(env.QS_COMPOSE) }
-      }
+      when { expression { return fileExists(env.QS_COMPOSE) } }
       steps {
         sh '''
           set -eux
           echo "Deploy QS…"
 
-          # optionale QS-Config nur anlegen, falls nicht vorhanden
           mkdir -p config
           [ -f config/odoo_qs.conf ] || cat > config/odoo_qs.conf <<CONF
 [options]
@@ -178,28 +172,26 @@ CONF
             fi
           done
 
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=120 db_qs || true
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=120 odoo_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=160 db_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=160 odoo_qs || true
         '''
       }
     }
 
     stage('Smoke (QS Gate)') {
-      when {
-        expression { return fileExists(env.QS_COMPOSE) }
-      }
+      when { expression { return fileExists(env.QS_COMPOSE) } }
       steps {
         sh '''
           set -eux
           echo "Smoke-Test QS…"
 
           for i in $(seq 1 90); do
-            if docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" exec -T odoo_qs python3 - <<'PY'
-import urllib.request, sys
-urls = [
-    "${QS_SMOKE_URL}",
-    "${QS_SMOKE_ALT}",
-]
+            if docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" exec -T \
+              -e SMOKE_URL="${QS_SMOKE_URL}" -e SMOKE_ALT="${QS_SMOKE_ALT}" \
+              odoo_qs python3 - <<'PY'
+import os, urllib.request, sys
+urls = [os.environ.get("SMOKE_URL",""), os.environ.get("SMOKE_ALT","")]
+urls = [u for u in urls if u]
 def ok(u):
     try:
         with urllib.request.urlopen(u, timeout=4) as r:
@@ -221,8 +213,8 @@ PY
             fi
           done
 
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=5m odoo_qs || true
-          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=5m db_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=7m odoo_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=7m db_qs || true
         '''
       }
     }
