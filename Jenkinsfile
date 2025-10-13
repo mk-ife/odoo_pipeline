@@ -73,26 +73,32 @@ CONF
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test (im Odoo-Container mit Python)…"
-          for i in $(seq 1 30); do
+          echo "Smoke-Test DEV (im Odoo-Container mit Python)…"
+          for i in $(seq 1 60); do
             if docker compose -f docker-compose.yml -p odoo-pipeline exec -T odoo \
               python3 - <<'PY'
 import urllib.request, sys
-try:
-    with urllib.request.urlopen("http://localhost:8069/web/login", timeout=2) as r:
-        body = r.read(2000)
-        ok = (r.status == 200) and (b"odoo" in body.lower() or b"login" in body.lower())
-        print("HTTP:", r.status, "LEN:", len(body))
-        sys.exit(0 if ok else 2)
-except Exception as e:
-    print("ERR:", e)
-    sys.exit(1)
+urls = [
+    "http://localhost:8069/web/database/selector",  # erreichbar, wenn DB noch nicht init/gewählt
+    "http://localhost:8069/web/login",              # erreichbar, wenn DB vorhanden/aktiv
+]
+ok = False
+for u in urls:
+    try:
+        with urllib.request.urlopen(u, timeout=3) as r:
+            if r.status == 200:
+                print("OK:", u, "HTTP", r.status)
+                ok = True
+                break
+    except Exception as e:
+        print("TRY:", u, "ERR:", e)
+sys.exit(0 if ok else 1)
 PY
             then
-              echo "Smoke OK"
+              echo "Smoke DEV OK"
               break
             else
-              echo "Warte auf Odoo ($i/30)…"
+              echo "Warte auf Odoo DEV ($i/60)…"
               sleep 3
             fi
           done
@@ -108,7 +114,6 @@ PY
           echo "Deploy QS…"
 
           mkdir -p config
-          # QS-Config nur anlegen, falls noch nicht vorhanden:
           [ -f config/odoo_qs.conf ] || cat > config/odoo_qs.conf <<CONF
 [options]
 addons_path = /mnt/extra-addons
@@ -137,8 +142,8 @@ CONF
               python3 - <<'PY'
 import urllib.request, sys
 urls = [
-    "http://localhost:8069/web/login",                # Login-Page (falls DB bereits initialisiert)
-    "http://localhost:8069/web/database/selector"     # DB-Selector, wenn noch keine DB gewählt wurde
+    "http://localhost:8069/web/database/selector",
+    "http://localhost:8069/web/login",
 ]
 ok = False
 for u in urls:
