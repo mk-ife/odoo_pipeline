@@ -21,9 +21,7 @@ services:
     ports:
       - "8069:8069"
     volumes:
-      # Directory-Mount, damit /etc/odoo/odoo.conf immer vorhanden ist
       - ./config:/etc/odoo:ro
-      # Optionale Addons:
       # - ./custom:/mnt/extra-addons:ro
       # - ./enterprise:/mnt/enterprise-addons:ro
     command: ["/opt/odoo/venv/bin/odoo", "-c", "/etc/odoo/odoo.conf"]

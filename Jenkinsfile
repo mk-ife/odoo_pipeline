@@ -10,7 +10,7 @@ pipeline {
     DEV_SMOKE_URL = "http://localhost:8069/web/login"
     DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
 
-    // Immer ein stabiler lokaler Tag, damit Deploy nie pullt/baut:
+    // Stabiler Compose-Tag
     ODOO_IMAGE    = "odoo-custom:latest"
 
     // ==== QS optional ====
@@ -48,18 +48,17 @@ pipeline {
       }
     }
 
-    stage('Build Image (local)') {
+    stage('Build Image (optional)') {
       steps {
         sh '''
           set -eux
           if [ -f Dockerfile ]; then
             DOCKER_BUILDKIT=1 docker build -t "odoo-custom:${BUILD_NUMBER}" .
-            # Immer auch 'latest' vergeben, damit Compose stabil ist
             docker tag "odoo-custom:${BUILD_NUMBER}" "odoo-custom:latest"
-            docker image ls | grep odoo-custom | head -n 3 || true
           else
-            echo "Kein Dockerfile – Build übersprungen."
+            echo "Kein Dockerfile – Build übersprungen (Deploy nutzt Fallback, falls Image fehlt)."
           fi
+          docker image ls | grep -E '^odoo-custom\\s' || true
         '''
       }
     }
@@ -79,7 +78,13 @@ db_user     = odoo
 db_password = password
 CONF
 
-          # Keine Builds/Pulls hier! Nur lokal vorhandenes Image verwenden.
+          # WICHTIG: Fallback, falls lokales Image fehlt:
+          if ! docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1; then
+            echo "Lokales Image ${ODOO_IMAGE} fehlt – ziehe Fallback 'odoo:18' und tagge es…"
+            docker pull odoo:18
+            docker tag odoo:18 "${ODOO_IMAGE}"
+          fi
+
           docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" down --remove-orphans || true
           ODOO_IMAGE="${ODOO_IMAGE}" docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d --force-recreate --no-build --pull never
 
@@ -138,12 +143,18 @@ PY
       }
     }
 
-    // ===== QS (nur falls Datei existiert, ebenfalls ohne Build) =====
+    // ===== QS (nur falls Datei existiert) =====
     stage('Deploy (QS)') {
       when { expression { return fileExists(env.QS_COMPOSE) } }
       steps {
         sh '''
           set -eux
+          # Fallback-Image auch für QS bereitstellen (odoo_qs benutzt eigenes Compose)
+          if ! docker image inspect "${ODOO_IMAGE}" >/dev/null 2>&1; then
+            docker pull odoo:18
+            docker tag odoo:18 "${ODOO_IMAGE}"
+          fi
+
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" down --remove-orphans || true
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d --force-recreate --no-build --pull never
 
