@@ -14,22 +14,25 @@ services:
       - pg_data:/var/lib/postgresql/data
 
   odoo:
-    # Standard-Image (du kannst weiterhin ODOO_IMAGE überschreiben, z. B. auf dein eigenes Build)
     image: ${ODOO_IMAGE:-odoo:18}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8069:8069"
-    # Directory-Mount, damit /etc/odoo/odoo.conf im Container existiert
+    # WICHTIG: ENV für wait-for-psql.py setzen
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: odoo
+      DB_PASSWORD: password
     volumes:
+      # Directory-Mount, damit /etc/odoo/odoo.conf als Datei vorhanden ist
       - ./config:/etc/odoo:ro
-      # Optionale Addons:
+      # optionale Addons:
       # - ./custom:/mnt/extra-addons:ro
       # - ./enterprise:/mnt/enterprise-addons:ro
-
-    # Wichtig: beim offiziellen Image ist das Binary einfach "odoo"
-    # Du kannst den command weglassen (nutzt Default), oder explizit mit -c starten:
+    # Offizielles Binary heißt einfach "odoo"
     command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
 
 volumes:
