@@ -22,6 +22,7 @@ services:
     ports:
       - "8069:8069"
     volumes:
+      - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
       - odoo-data:/var/lib/odoo
       - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
     # Erzwingt, dass Odoo genau die gemountete Config nutzt
