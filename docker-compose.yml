@@ -14,25 +14,25 @@ services:
       - pg_data:/var/lib/postgresql/data
 
   odoo:
+    # Standardmäßig das offizielle Odoo nutzen; bei Bedarf in Jenkins ODOO_IMAGE überschreiben.
     image: ${ODOO_IMAGE:-odoo:18}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8069:8069"
-    # WICHTIG: ENV für wait-for-psql.py setzen
+    # WICHTIG: Diese ENV braucht das offizielle odoo:18-Image vor dem Start.
     environment:
       DB_HOST: db
       DB_PORT: "5432"
       DB_USER: odoo
       DB_PASSWORD: password
+    # Deine Odoo-Konfiguration kommt aus ./config/odoo.conf
     volumes:
-      # Directory-Mount, damit /etc/odoo/odoo.conf als Datei vorhanden ist
       - ./config:/etc/odoo:ro
-      # optionale Addons:
+      # Optional: lokale Addons mounten
       # - ./custom:/mnt/extra-addons:ro
-      # - ./enterprise:/mnt/enterprise-addons:ro
-    # Offizielles Binary heißt einfach "odoo"
+    # Explizit starten und Config übergeben
     command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
 
 volumes:
