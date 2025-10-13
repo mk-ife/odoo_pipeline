@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stelle sicher, dass docker compose (v2) verfügbar ist
 WORKSPACE="${WORKSPACE:-$(pwd)}"
 export DOCKER_CONFIG="$WORKSPACE/.docker"
 mkdir -p "$DOCKER_CONFIG/cli-plugins"
@@ -15,12 +14,10 @@ fi
 
 FILE="docker-compose.yml"
 SVC="odoo"
-# Default-URL: /web/database/selector funktioniert auch ohne initialisierte DB
-URL="${DEV_URL:-http://localhost:8069/web/database/selector}"
+URL="${DEV_URL:-http://localhost:8069/web/login}"
 RETRIES="${RETRIES:-60}"
 SLEEP_SECS="${SLEEP_SECS:-3}"
 
-# Existiert Compose-Datei & Service?
 test -f "$FILE"
 docker compose -f "$FILE" ps "$SVC" >/dev/null
 

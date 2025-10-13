@@ -14,7 +14,6 @@ fi
 
 FILE="docker-compose.qs.yml"
 SVC="odoo_qs"
-# Für QS nehmen wir standardmäßig direkt /web/login (da QS stabil/persistenter ist)
 URL="${QS_URL:-http://localhost:8069/web/login}"
 RETRIES="${RETRIES:-60}"
 SLEEP_SECS="${SLEEP_SECS:-3}"
