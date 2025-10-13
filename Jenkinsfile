@@ -1,12 +1,30 @@
 pipeline {
   agent any
+
   environment {
     DOCKER_CONFIG = "${WORKSPACE}/.docker"
+
+    // ==== DEV ====
+    DEV_COMPOSE   = "docker-compose.yml"
+    DEV_PROJECT   = "odoo-pipeline"
+    DEV_PORT      = "8069"
+    DEV_SMOKE_URL = "http://localhost:8069/web/login"
+    DEV_SMOKE_ALT = "http://localhost:8069/web/database/selector"
+
+    // ==== QS ====
+    // Wir erwarten eine separate QS-Compose mit Services 'odoo_qs' und 'db_qs'
+    QS_COMPOSE    = "docker-compose.qs.yml"
+    QS_PROJECT    = "odoo-pipeline-qs"
+    QS_PORT       = "18069"
+    QS_SMOKE_URL  = "http://localhost:18069/web/login"
+    QS_SMOKE_ALT  = "http://localhost:18069/web/database/selector"
   }
+
   stages {
     stage('Checkout') {
       steps { checkout scm }
     }
+
     stage('Lint') {
       steps {
         sh '''
@@ -30,6 +48,7 @@ pipeline {
         '''
       }
     }
+
     stage('Build') {
       steps {
         sh '''
@@ -44,12 +63,14 @@ pipeline {
         '''
       }
     }
-    stage('Deploy') {
+
+    // ===== DEV =====
+    stage('Deploy (DEV)') {
       steps {
         sh '''
           set -eux
-          echo "Workspace: $PWD"
 
+          # einfache DEV-Config, falls gebraucht
           mkdir -p config
           [ -f config/odoo.conf ] || cat > config/odoo.conf <<CONF
 [options]
@@ -61,38 +82,50 @@ db_user     = odoo
 db_password = password
 CONF
 
-          docker compose -f docker-compose.yml -p odoo-pipeline down --remove-orphans || true
-          docker compose -f docker-compose.yml -p odoo-pipeline up -d
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" down --remove-orphans || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" up -d
 
-          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 db || true
-          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 odoo || true
+          echo "Warte auf Postgres (DEV/db)…"
+          for i in $(seq 1 60); do
+            if docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" exec -T db sh -lc 'command -v pg_isready >/dev/null 2>&1 || exit 99; pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER:-odoo}" -d "$${POSTGRES_DB:-postgres}"'; then
+              echo "Postgres DEV ready."
+              break
+            else
+              echo "DB DEV noch nicht bereit ($i/60)…"
+              sleep 2
+            fi
+          done
+
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=80 db || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --tail=80 odoo || true
         '''
       }
     }
-    stage('Smoke') {
+
+    stage('Smoke (DEV)') {
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test DEV (im Odoo-Container mit Python)…"
+          echo "Smoke-Test DEV…"
+
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.yml -p odoo-pipeline exec -T odoo \
-              python3 - <<'PY'
+            if docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" exec -T odoo python3 - <<'PY'
 import urllib.request, sys
 urls = [
-    "http://localhost:8069/web/database/selector",  # erreichbar, wenn DB noch nicht init/gewählt
-    "http://localhost:8069/web/login",              # erreichbar, wenn DB vorhanden/aktiv
+    "${DEV_SMOKE_URL}",
+    "${DEV_SMOKE_ALT}",
 ]
-ok = False
-for u in urls:
+def ok(u):
     try:
         with urllib.request.urlopen(u, timeout=3) as r:
-            if r.status == 200:
-                print("OK:", u, "HTTP", r.status)
-                ok = True
-                break
+            body = r.read(2000).lower()
+            good = (r.status == 200) and (b"odoo" in body or b"login" in body or b"database" in body or b"selector" in body)
+            print("URL:", u, "HTTP:", r.status, "LEN:", len(body))
+            return good
     except Exception as e:
-        print("TRY:", u, "ERR:", e)
-sys.exit(0 if ok else 1)
+        print("URL:", u, "ERR:", e)
+        return False
+sys.exit(0 if any(ok(u) for u in urls) else 1)
 PY
             then
               echo "Smoke DEV OK"
@@ -102,17 +135,24 @@ PY
               sleep 3
             fi
           done
+
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=3m odoo || true
+          docker compose -f "${DEV_COMPOSE}" -p "${DEV_PROJECT}" logs --no-color --since=3m db || true
         '''
       }
     }
 
-    /* ===================== QS (neu) ===================== */
-    stage('Deploy QS') {
+    // ===== QS =====
+    stage('Deploy (QS)') {
+      when {
+        expression { return fileExists(env.QS_COMPOSE) }
+      }
       steps {
         sh '''
           set -eux
           echo "Deploy QS…"
 
+          # optionale QS-Config nur anlegen, falls nicht vorhanden
           mkdir -p config
           [ -f config/odoo_qs.conf ] || cat > config/odoo_qs.conf <<CONF
 [options]
@@ -124,52 +164,76 @@ db_user     = odoo
 db_password = password
 CONF
 
-          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs down --remove-orphans || true
-          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs up -d
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" down --remove-orphans || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" up -d
 
-          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs logs --no-color --tail=50 db_qs || true
-          docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs logs --no-color --tail=50 odoo_qs || true
+          echo "Warte auf Postgres (QS/db_qs)…"
+          for i in $(seq 1 90); do
+            if docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" exec -T db_qs sh -lc 'command -v pg_isready >/dev/null 2>&1 || exit 99; pg_isready -h 127.0.0.1 -U "$${POSTGRES_USER:-odoo}" -d "$${POSTGRES_DB:-postgres}"'; then
+              echo "Postgres QS ready."
+              break
+            else
+              echo "DB QS noch nicht bereit ($i/90)…"
+              sleep 2
+            fi
+          done
+
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=120 db_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --tail=120 odoo_qs || true
         '''
       }
     }
-    stage('Smoke QS') {
+
+    stage('Smoke (QS Gate)') {
+      when {
+        expression { return fileExists(env.QS_COMPOSE) }
+      }
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test QS (im Odoo-QS-Container mit Python)…"
-          for i in $(seq 1 60); do
-            if docker compose -f docker-compose.qs.yml -p odoo-pipeline-qs exec -T odoo_qs \
-              python3 - <<'PY'
+          echo "Smoke-Test QS…"
+
+          for i in $(seq 1 90); do
+            if docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" exec -T odoo_qs python3 - <<'PY'
 import urllib.request, sys
 urls = [
-    "http://localhost:8069/web/database/selector",
-    "http://localhost:8069/web/login",
+    "${QS_SMOKE_URL}",
+    "${QS_SMOKE_ALT}",
 ]
-ok = False
-for u in urls:
+def ok(u):
     try:
-        with urllib.request.urlopen(u, timeout=3) as r:
-            if r.status == 200:
-                print("OK:", u, "HTTP", r.status)
-                ok = True
-                break
+        with urllib.request.urlopen(u, timeout=4) as r:
+            body = r.read(4000).lower()
+            good = (r.status == 200) and (b"odoo" in body or b"login" in body or b"database" in body or b"selector" in body)
+            print("URL:", u, "HTTP:", r.status, "LEN:", len(body))
+            return good
     except Exception as e:
-        print("TRY:", u, "ERR:", e)
-sys.exit(0 if ok else 1)
+        print("URL:", u, "ERR:", e)
+        return False
+sys.exit(0 if any(ok(u) for u in urls) else 1)
 PY
             then
               echo "Smoke QS OK"
               break
             else
-              echo "Warte auf Odoo QS ($i/60)…"
+              echo "Warte auf Odoo QS ($i/90)…"
               sleep 3
             fi
           done
+
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=5m odoo_qs || true
+          docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" logs --no-color --since=5m db_qs || true
         '''
       }
     }
   }
+
   post {
-    always { archiveArtifacts artifacts: '**/docker-compose*.yml, **/Jenkinsfile', onlyIfSuccessful: false }
+    always {
+      archiveArtifacts artifacts: '**/docker-compose*.yml, **/Jenkinsfile', onlyIfSuccessful: false
+    }
+    failure {
+      echo 'Pipeline fehlgeschlagen – bitte Logs oben prüfen.'
+    }
   }
 }
