@@ -1,0 +1,38 @@
+version: "3.9"
+services:
+  db_qs:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${ODOO_DB_USER:-odoo}
+      POSTGRES_PASSWORD: ${ODOO_DB_PASS:-odoo}
+      POSTGRES_DB: odoo_qs
+    volumes:
+      - pgdata_qs:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${ODOO_DB_USER:-odoo} -d odoo_qs"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+
+  odoo_qs:
+    image: odoo:18.0
+    depends_on:
+      db_qs:
+        condition: service_healthy
+    environment:
+      HOST: db_qs
+      PORT: "5432"
+      USER: ${ODOO_DB_USER:-odoo}
+      PASSWORD: ${ODOO_DB_PASS:-odoo}
+      DATABASE: odoo_qs
+    volumes:
+      - odoo_qs-data:/var/lib/odoo
+      - ./odoo.conf:/etc/odoo/odoo.conf:ro
+    ports:
+      - "18069:8069"   # QS auf anderem Host-Port, Dev bleibt 8069
+    restart: unless-stopped
+
+volumes:
+  pgdata_qs: {}
+  odoo_qs-data: {}
