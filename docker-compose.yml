@@ -4,31 +4,29 @@ services:
     environment:
       POSTGRES_USER: odoo
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: odoo18
+      POSTGRES_DB: postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo18"]
-      interval: 5s
-      timeout: 3s
-      retries: 60
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
+      - pg_data:/var/lib/postgresql/data
 
   odoo:
-    image: odoo:18.0
+    image: ${ODOO_IMAGE:-odoo-custom:latest}
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8069:8069"
+    # WICHTIG: Directory-Mount, nicht einzelner File-Mount
     volumes:
-      - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
-      - odoo-data:/var/lib/odoo
-      - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
-    # Erzwingt, dass Odoo genau die gemountete Config nutzt
-    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
-    restart: unless-stopped
+      - ./config:/etc/odoo:ro
+      # falls du lokale Addons mounten willst, lass diese Zeilen drin/füge sie hinzu:
+      # - ./custom:/mnt/extra-addons:ro
+      # - ./enterprise:/mnt/enterprise-addons:ro
+    command: ["/opt/odoo/venv/bin/odoo", "-c", "/etc/odoo/odoo.conf"]
 
 volumes:
-  pgdata: {}
-  odoo-data: {}
+  pg_data: {}
