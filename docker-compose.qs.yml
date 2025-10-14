@@ -19,7 +19,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # Pflicht fürs offizielle Image (wait-for-psql.py)
     environment:
       DB_HOST: db
       DB_PORT: "5432"
