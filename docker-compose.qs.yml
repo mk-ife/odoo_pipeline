@@ -31,7 +31,10 @@ services:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      - ./config/qs:/etc/odoo:ro
+      # WICHTIG: Mount exakt der Datei, nicht nur des Ordners
+      - ./config/qs/odoo.conf:/etc/odoo/odoo.conf:ro
+      # optional: eigene Addons:
+      # - ./extra-addons:/mnt/extra-addons:ro
     restart: unless-stopped
 
 volumes:
