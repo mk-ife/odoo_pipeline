@@ -27,13 +27,14 @@ services:
       USER: odoo
       PASSWORD: password
       DATABASE: odoo_qs
+    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
     ports:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      # WICHTIG: Mount exakt der Datei, nicht nur des Ordners
-      - ./config/qs/odoo.conf:/etc/odoo/odoo.conf:ro
-      # optional: eigene Addons:
+      # Mount GANZER Ordner -> /etc/odoo, odoo.conf liegt darin
+      - ./config/qs:/etc/odoo:ro
+      # optional: eigene Addons
       # - ./extra-addons:/mnt/extra-addons:ro
     restart: unless-stopped
 
