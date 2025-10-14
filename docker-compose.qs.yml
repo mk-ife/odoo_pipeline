@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:16
@@ -8,7 +10,7 @@ services:
     volumes:
       - qs_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U odoo -d odoo_qs"]
       interval: 5s
       timeout: 3s
       retries: 60
@@ -19,18 +21,29 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # ENV dienen als Quelle, Command nutzt sie für CLI-Start:
     environment:
-      DB_HOST: db
-      DB_PORT: "5432"
-      DB_USER: odoo
-      DB_PASSWORD: password
-      DB_NAME: odoo_qs
+      HOST: db
+      PORT: "5432"
+      USER: odoo
+      PASSWORD: password
+      DATABASE: odoo_qs
+    # Start Odoo mit CLI-DB-Parametern (kein odoo.conf nötig)
+    command:
+      - bash
+      - -lc
+      - >
+        exec odoo
+        --db_host="$HOST"
+        --db_port="$PORT"
+        --db_user="$USER"
+        --db_password="$PASSWORD"
     ports:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      - ./config/qs:/etc/odoo:ro
-    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
+      # Optionales Debug-Mount (nur wenn gewünscht):
+      # - ./config/qs:/etc/odoo:ro
     restart: unless-stopped
 
 volumes:
