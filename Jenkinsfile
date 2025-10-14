@@ -4,17 +4,13 @@ pipeline {
     DOCKER_CONFIG = "${WORKSPACE}/.docker"
   }
   stages {
-
     stage('Checkout') {
       steps { checkout scm }
     }
-
-    stage('Deploy QS') {
+    stage('Lint') {
       steps {
         sh '''
           set -eux
-          echo "Workspace: $PWD"
-
           mkdir -p "$DOCKER_CONFIG/cli-plugins"
           [ -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ] || {
             echo "Lade docker compose v2.29.7…"
@@ -23,110 +19,88 @@ pipeline {
           }
           docker compose version
 
-          # Clean & Up (QS)
-          docker compose -f docker-compose.qs.yml -p odoo-qs down --remove-orphans || true
-          docker compose -f docker-compose.qs.yml -p odoo-qs up -d
-
-          # DB healthy abwarten
-          for i in $(seq 1 60); do
-            if docker compose -f docker-compose.qs.yml -p odoo-qs ps --services --filter status=running | grep -q '^db$'; then
-              if docker compose -f docker-compose.qs.yml -p odoo-qs logs --tail=10 db | grep -qi "ready to accept connections"; then
-                echo "QS DB ready."
-                break
-              fi
-            fi
-            echo "Warte auf QS DB ($i/60)…"
-            sleep 2
-          done
-
-          # Odoo running abwarten (kein Restarting)
-          OD=$(docker compose -f docker-compose.qs.yml -p odoo-qs ps -q odoo)
-          for i in $(seq 1 60); do
-            st=$(docker inspect -f '{{.State.Status}}' "$OD" || true)
-            rs=$(docker inspect -f '{{.State.Restarting}}' "$OD" || true)
-            echo "Odoo state=$st restarting=$rs"
-            [ "$st" = "running" ] && [ "$rs" != "true" ] && break || true
-            echo "Warte auf Odoo QS Container ($i/60)…"
-            sleep 2
-          done
-
-          docker compose -f docker-compose.qs.yml -p odoo-qs logs --tail=50 db || true
-          docker compose -f docker-compose.qs.yml -p odoo-qs logs --tail=50 odoo || true
+          docker run --rm --pull=missing -u 0 -w "$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:$PWD" \
+            -v "$DOCKER_CONFIG:$DOCKER_CONFIG" \
+            -e DOCKER_CONFIG="$DOCKER_CONFIG" \
+            python:3.11-slim sh -lc '
+              pip install -q flake8 && flake8 .
+            '
         '''
       }
     }
-
-    stage('Init QS DB (base)') {
+stage('Build') {
       steps {
         sh '''
           set -eux
-          echo "Initialisiere QS-DB (Install base ohne Demo, per CLI-DB-Parameter)…"
-
-          OD=$(docker compose -f docker-compose.qs.yml -p odoo-qs ps -q odoo)
-
-          # kleine Wartezeit nach Start
-          sleep 5
-
-          # Die ENV (HOST, PORT, USER, PASSWORD) sind im Container vorhanden
-          for retry in $(seq 1 10); do
-            if docker exec -i "$OD" \
-              bash -lc 'exec odoo -d "$DATABASE" -i base --without-demo=all --stop-after-init --db_host="$HOST" --db_port="$PORT" --db_user="$USER" --db_password="$PASSWORD"'
-            then
-              echo "QS DB init OK"
-              break
-            else
-              echo "Init QS DB Versuch $retry/10 gescheitert – warte und versuche erneut…"
-              sleep 3
-            fi
-          done
-
-          docker compose -f docker-compose.qs.yml -p odoo-qs logs --tail=80 odoo || true
+          if [ -f Dockerfile ]; then
+            echo "Dockerfile gefunden – baue Test-Image…"
+            DOCKER_BUILDKIT=1 docker build -t odoo-custom:${BUILD_NUMBER} .
+            docker image ls | grep odoo-custom | head -n 1 || true
+          else
+            echo "Kein Dockerfile im Repo – überspringe Build."
+          fi
         '''
       }
     }
-
-    stage('Smoke QS') {
+    stage('Deploy') {
       steps {
         sh '''
           set -eux
-          echo "Smoke-Test QS (im Odoo-Container, http://localhost:8069)…"
+          echo "Workspace: $PWD"
 
-          OD=$(docker compose -f docker-compose.qs.yml -p odoo-qs ps -q odoo)
+          mkdir -p config
+          [ -f config/odoo.conf ] || cat > config/odoo.conf <<CONF
+[options]
+addons_path = /mnt/extra-addons
+data_dir    = /var/lib/odoo
+db_host     = db
+db_port     = 5432
+db_user     = odoo
+db_password = password
+CONF
 
-          for i in $(seq 1 60); do
-            if docker exec -i "$OD" \
+          docker compose -f docker-compose.yml -p odoo-pipeline down --remove-orphans || true
+          docker compose -f docker-compose.yml -p odoo-pipeline up -d
+
+          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 db || true
+          docker compose -f docker-compose.yml -p odoo-pipeline logs --no-color --tail=50 odoo || true
+        '''
+      }
+    }
+    stage('Smoke') {
+      steps {
+        sh '''
+          set -eux
+          echo "Smoke-Test (im Odoo-Container mit Python)…"
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.yml -p odoo-pipeline exec -T odoo \
               python3 - <<'PY'
 import urllib.request, sys
-def try_url(u):
-    try:
-        with urllib.request.urlopen(u, timeout=2) as r:
-            b = r.read(2000)
-            ok = (r.status in (200, 302, 303)) and any(k in b.lower() for k in [b"odoo", b"login", b"database"])
-            print("OK:", u, "HTTP", r.status, "LEN", len(b))
-            return ok
-    except Exception as e:
-        print("TRY:", u, "ERR:", e)
-        return False
-
-ok = try_url("http://localhost:8069/web/database/selector") or try_url("http://localhost:8069/web/login")
-sys.exit(0 if ok else 1)
+try:
+    with urllib.request.urlopen("http://localhost:8069/web/login", timeout=2) as r:
+        body = r.read(2000)
+        ok = (r.status == 200) and (b"odoo" in body.lower() or b"login" in body.lower())
+        print("HTTP:", r.status, "LEN:", len(body))
+        sys.exit(0 if ok else 2)
+except Exception as e:
+    print("ERR:", e)
+    sys.exit(1)
 PY
             then
-              echo "Smoke QS OK"
+              echo "Smoke OK"
               break
             else
-              echo "Warte auf Odoo QS ($i/60)…"
+              echo "Warte auf Odoo ($i/30)…"
               sleep 3
             fi
           done
         '''
       }
     }
-
   }
   post {
-    always {
-      archiveArtifacts artifacts: '**/docker-compose*.yml, **/Jenkinsfile, config/**/*.conf', onlyIfSuccessful: false
-    }
+    always { archiveArtifacts artifacts: '**/docker-compose.yml, **/Jenkinsfile', onlyIfSuccessful: false }
   }
 }
