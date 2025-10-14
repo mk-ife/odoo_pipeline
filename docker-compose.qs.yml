@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:16
@@ -6,7 +8,7 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: odoo_qs
     volumes:
-      - pgdata_qs:/var/lib/postgresql/data
+      - qs_pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U odoo -d odoo_qs"]
       interval: 5s
@@ -19,16 +21,19 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    volumes:
-      - ./config/qs/odoo.conf:/etc/odoo/odoo.conf:ro
-      - odoo_data_qs:/var/lib/odoo
-    # Start Odoo direkt mit der Konfiguration (kein wait-for-psql)
-    command: ["odoo", "-c", "/etc/odoo/odoo.conf"]
-    restart: unless-stopped
-    # Optional: QS auch von außen erreichbar machen (z.B. 8070)
+    environment:
+      HOST: db
+      PORT: "5432"
+      USER: odoo
+      PASSWORD: password
+      DATABASE: odoo_qs
     ports:
-      - "8070:8069"
+      - "8079:8069"
+    volumes:
+      - qs_odoo_data:/var/lib/odoo
+      - ./config/qs:/etc/odoo:ro
+    restart: unless-stopped
 
 volumes:
-  pgdata_qs: {}
-  odoo_data_qs: {}
+  qs_pgdata: {}
+  qs_odoo_data: {}
