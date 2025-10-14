@@ -1,15 +1,14 @@
-version: "3.9"
 services:
   db_qs:
     image: postgres:16
     environment:
-      POSTGRES_USER: ${ODOO_DB_USER:-odoo}
-      POSTGRES_PASSWORD: ${ODOO_DB_PASS:-odoo}
-      POSTGRES_DB: odoo_qs
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: odoo18_qs
     volumes:
       - pgdata_qs:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${ODOO_DB_USER:-odoo} -d odoo_qs"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 60
@@ -20,19 +19,20 @@ services:
     depends_on:
       db_qs:
         condition: service_healthy
+    # Das offizielle odoo-Image erwartet DB_* Variablen (für wait-for-psql.py)
     environment:
-      HOST: db_qs
-      PORT: "5432"
-      USER: ${ODOO_DB_USER:-odoo}
-      PASSWORD: ${ODOO_DB_PASS:-odoo}
-      DATABASE: odoo_qs
-    volumes:
-      - odoo_qs-data:/var/lib/odoo
-      - ./odoo.conf:/etc/odoo/odoo.conf:ro
+      DB_HOST: db_qs
+      DB_PORT: "5432"
+      DB_USER: odoo
+      DB_PASSWORD: password
+      DB_NAME: odoo18_qs
     ports:
-      - "18069:8069"   # QS auf anderem Host-Port, Dev bleibt 8069
+      - "18069:8069"
+    volumes:
+      - odoo-data-qs:/var/lib/odoo
+      - ./config_qs:/etc/odoo:ro
     restart: unless-stopped
 
 volumes:
-  pgdata_qs: {}
-  odoo_qs-data: {}
+  pgdata_qs:
+  odoo-data-qs:
