@@ -7,14 +7,31 @@ pipeline {
     QS_SMOKE_URL  = "http://localhost:18069/web/login"
     QS_SMOKE_ALT  = "http://localhost:18069/web/database/selector"
   }
+
   stages {
     stage('Checkout') { steps { checkout scm } }
+
+    stage('Setup Docker Compose') {
+      steps {
+        sh '''
+          set -eux
+          mkdir -p "$DOCKER_CONFIG/cli-plugins"
+          if [ ! -x "$DOCKER_CONFIG/cli-plugins/docker-compose" ]; then
+            echo "Installing docker compose v2.29.7..."
+            curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+              -o "$DOCKER_CONFIG/cli-plugins/docker-compose"
+            chmod +x "$DOCKER_CONFIG/cli-plugins/docker-compose"
+          fi
+          docker compose version
+        '''
+      }
+    }
 
     stage('Deploy (QS)') {
       steps {
         sh '''
           set -eux
-          # Sicherstellen, dass die QS-Config-Datei existiert
+          # QS-Config-Datei sicherstellen (nicht überschreiben, wenn sie schon da ist)
           mkdir -p config_qs
           [ -d config_qs/odoo.conf ] && rm -rf config_qs/odoo.conf
           [ -s config_qs/odoo.conf ] || cat > config_qs/odoo.conf <<CONF
@@ -52,7 +69,7 @@ CONF
       steps {
         sh '''
           set -eux
-          # Einmalige Initialisierung umgehen EntryPoint
+          # Einmalige Initialisierung (EntryPoint umgehen)
           docker compose -f "${QS_COMPOSE}" -p "${QS_PROJECT}" run --rm \
             --entrypoint odoo \
             odoo_qs -c /etc/odoo/odoo.conf \
@@ -101,6 +118,7 @@ PY
       }
     }
   }
+
   post {
     always {
       archiveArtifacts artifacts: '**/docker-compose.qs.yml, **/Jenkinsfile.qs', onlyIfSuccessful: false
