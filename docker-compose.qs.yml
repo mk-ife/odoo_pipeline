@@ -21,14 +21,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    # ENV dienen als Quelle, Command nutzt sie für CLI-Start:
+    # Feste ENV-Werte (keine ${VAR}-Syntax!)
     environment:
       HOST: db
       PORT: "5432"
       USER: odoo
       PASSWORD: password
       DATABASE: odoo_qs
-    # Start Odoo mit CLI-DB-Parametern (kein odoo.conf nötig)
+    # Start über CLI-DB-Parameter – keine odoo.conf nötig:
     command:
       - bash
       - -lc
@@ -42,7 +42,7 @@ services:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      # Optionales Debug-Mount (nur wenn gewünscht):
+      # Debug optional:
       # - ./config/qs:/etc/odoo:ro
     restart: unless-stopped
 
