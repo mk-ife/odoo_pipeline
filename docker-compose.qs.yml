@@ -31,7 +31,7 @@ services:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      - ./config/qs:/etc/odoo:ro
+      - ./config/odoo_qs.conf:/etc/odoo/odoo.conf:ro
     restart: unless-stopped
 
 volumes:
