@@ -31,7 +31,6 @@ services:
       - "8079:8069"
     volumes:
       - qs_odoo_data:/var/lib/odoo
-      # WICHTIG: komplettes Verzeichnis mounten, darin liegt odoo.conf
       - ./config/qs:/etc/odoo:ro
     restart: unless-stopped
 
